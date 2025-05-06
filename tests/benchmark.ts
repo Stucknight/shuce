@@ -1,30 +1,72 @@
 import { Tensor } from '../src/tensor';
 
-function benchmark(device: 'cpu' | 'gpu') {
-    const batch = Tensor.randn([64, 128], false, device);         // input batch
-    const W1 = Tensor.randn([128, 256], true, device);            // layer 1 weights
-    const b1 = Tensor.randn([64, 256], true, device);             // layer 1 bias
-    const W2 = Tensor.randn([256, 128], true, device);            // layer 2 weights
-    const b2 = Tensor.randn([64, 128], true, device);             // layer 2 bias
-    const target = Tensor.randn([64, 128], false, device);        // target for loss
-
-    const t0 = performance.now();
-
-    const hidden = batch.matmul(W1).add(b1);
-    const output = hidden.matmul(W2).add(b2);
-    const diff = output.add(target.mul(-1));
+function mseLoss(pred: Tensor, target: Tensor): Tensor {
+    const diff = pred.add(target.mul(-1));
     const sq = diff.mul(diff);
-    const loss = sq.mean();
-    loss.backward();
-
-    const t1 = performance.now();
-    return { time: t1 - t0, loss: loss.data };
+    return sq.mean();
 }
 
-const cpuResult = benchmark('cpu');
-console.log('CPU time:', cpuResult.time.toFixed(2), 'ms');
-console.log('CPU loss:', cpuResult.loss);
+let device:'cpu' | 'gpu' = 'cpu'
 
-const gpuResult = benchmark('gpu');
-console.log('GPU time:', gpuResult.time.toFixed(2), 'ms');
-console.log('GPU loss:', gpuResult.loss);
+const A = new Tensor([
+    new Float32Array([1, 2, 3]),
+    new Float32Array([4, 5, 6]),
+], true, device);
+
+const B = new Tensor([
+    new Float32Array([1, 1]),
+    new Float32Array([1, 1]),
+], true, device);
+
+const C = new Tensor([
+    new Float32Array([0, 1, 0]),
+    new Float32Array([1, 0, 1]),
+], true, device);
+
+const D = new Tensor([
+    new Float32Array([0.5, -1, 2]),
+    new Float32Array([1.5, 0, -0.5]),
+], true, device);
+
+const E = A.add(C);
+const F = E.mul(D);
+const D_T = D.transpose();
+const G = F.matmul(D_T);
+const loss = mseLoss(G, B);
+loss.backward();
+
+console.log("=== E = A + C ===");
+console.log(E.data);
+
+console.log("=== F = E * D ===");
+console.log(F.data);
+
+console.log("=== G = F.matmul(D_T) ===");
+console.log(G.data);
+
+console.log("=== Loss ===");
+console.log(loss.data);
+
+console.log("=== grad of A ===");
+console.log(A.grad?.data);
+
+console.log("=== grad of B ===");
+console.log(B.grad?.data);
+
+console.log("=== grad of C ===");
+console.log(C.grad?.data);
+
+console.log("=== grad of D ===");
+console.log(D.grad?.data);
+
+console.log("=== grad of E ===");
+console.log(E.grad?.data);
+
+console.log("=== grad of F ===");
+console.log(F.grad?.data);
+
+console.log("=== grad of G ===");
+console.log(G.grad?.data);
+
+console.log("=== grad of loss ===");
+console.log(loss.grad?.data);

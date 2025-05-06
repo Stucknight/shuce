@@ -1,196 +1,152 @@
-import {GPU} from 'gpu.js';
+import { GPU } from 'gpu.js';
 
 const gpu = new GPU();
 
-function deepCopy<T>(x: T): T {
-    return Array.isArray(x) ? (x as any[]).map(deepCopy) as any : x;
+function shapeOf(data: Float32Array[] | number[][]): number[] {
+    return [data.length, data[0].length];
 }
 
-function toNestedArray(data: any): number[][] {
-    return Array.isArray(data) ? data.map((row: any) => Array.from(row)) : [];
+function fillLike(shape: number[], value: number): Float32Array[] {
+    return Array.from({ length: shape[0] }, () => new Float32Array(shape[1]).fill(value));
 }
 
-function shapeOf(data: any): number[] {
-    const shape: number[] = [];
-    let current = data;
-    while (Array.isArray(current)) {
-        shape.push(current.length);
-        current = current[0];
-    }
-    return shape;
+function addRows(a: Float32Array[], b: Float32Array[]): Float32Array[] {
+    return a.map((row, i) => row.map((val, j) => val + b[i][j]));
 }
 
-function flatDeep(arr: any): number[] {
-    return Array.isArray(arr) ? arr.flat(Infinity) : [arr];
+function mulRows(a: Float32Array[], b: Float32Array[]): Float32Array[] {
+    return a.map((row, i) => row.map((val, j) => val * b[i][j]));
 }
 
-function reshape(flat: number[], shape: number[]): any {
-    if (shape.length === 0) return flat[0];
-    const [dim, ...rest] = shape;
-    const step = rest.reduce((a, b) => a * b, 1);
-    return Array.from({length: dim}, (_, i) =>
-        reshape(flat.slice(i * step, (i + 1) * step), rest)
-    );
-}
-
-function fillLike(template: any, value: number): any {
-    return Array.isArray(template)
-        ? template.map(row => fillLike(row, value))
-        : value;
-}
-
-function addArrays(a: any, b: any): any {
-    if (!Array.isArray(a) && !Array.isArray(b)) return a + b;
-    if (!Array.isArray(a)) return addArrays(fillLike(b, a), b);
-    if (!Array.isArray(b)) return addArrays(a, fillLike(a, b));
-    return a.map((v, i) => addArrays(v, b[i]));
-}
-
-function mulArrays(a: any, b: any): any {
-    if (!Array.isArray(a) && !Array.isArray(b)) return a * b;
-    if (!Array.isArray(a)) return mulArrays(fillLike(b, a), b);
-    if (!Array.isArray(b)) return mulArrays(a, fillLike(a, b));
-    return a.map((v, i) => mulArrays(v, b[i]));
-}
-
-function matmul(a: number[][], b: number[][]): number[][] {
+function dot(a: Float32Array[], b: Float32Array[]): Float32Array[] {
     const m = a.length, k = a[0].length, n = b[0].length;
-    const result: number[][] = Array.from({ length: m }, () => Array(n).fill(0));
+    const out: Float32Array[] = Array.from({ length: m }, () => new Float32Array(n));
     for (let i = 0; i < m; i++)
         for (let j = 0; j < n; j++)
             for (let x = 0; x < k; x++)
-                result[i][j] += a[i][x] * b[x][j];
-    return result;
-}
-
-function transpose(matrix: number[][]): number[][] {
-    return matrix[0].map((_, col) => matrix.map(row => row[col]));
+                out[i][j] += a[i][x] * b[x][j];
+    return out;
 }
 
 export class Tensor {
-    public grad: Tensor | null = null;
-    public operation: any = null;
-    public parents: Tensor[] = [];
-
-    public shape: number[];
+    grad: Tensor | null = null;
+    op: any = null;
+    parents: Tensor[] = [];
 
     constructor(
-        public data: any,
+        public data: Float32Array[],
         public requires_grad = false,
-        public device: 'cpu' | 'gpu' = 'cpu'
-    ) {
-        this.data = deepCopy(data);
-        this.shape = shapeOf(data);
-    }
-
-    private isScalar(): boolean {
-        return this.shape.length === 0 || (this.shape.length === 1 && this.shape[0] === 1);
-    }
+        public device: 'cpu' | 'gpu' = 'cpu',
+        public shape = shapeOf(data),
+    ) {}
 
     static randn(shape: number[], requires_grad = false, device: 'cpu' | 'gpu' = 'cpu'): Tensor {
-        const total = shape.reduce((a, b) => a * b, 1);
-        const data: number[] = [];
-        for (let i = 0; i < total; i += 2) {
-            const u1 = Math.random(), u2 = Math.random();
-            const r = Math.sqrt(-2 * Math.log(u1)), theta = 2 * Math.PI * u2;
-            data.push(r * Math.cos(theta));
-            if (i + 1 < total) data.push(r * Math.sin(theta));
-        }
-        return new Tensor(reshape(data, shape), requires_grad, device);
+        const [h, w] = shape;
+        const rows = Array.from({ length: h }, () => {
+            const row = new Float32Array(w);
+            for (let j = 0; j < w; j++) {
+                const u1 = Math.random(), u2 = Math.random();
+                const r = Math.sqrt(-2 * Math.log(u1)), theta = 2 * Math.PI * u2;
+                row[j] = r * Math.cos(theta);
+            }
+            return row;
+        });
+        return new Tensor(rows, requires_grad, device, shape);
     }
 
     add(other: Tensor | number): Tensor {
-        return new AddOp().forward(this, other);
+        return new Add().forward(this, other);
     }
 
     mul(other: Tensor | number): Tensor {
-        return new MulOp().forward(this, other);
+        return new Mul().forward(this, other);
     }
 
     matmul(other: Tensor): Tensor {
-        return new MatMulOp().forward(this, other);
+        return new MatMul().forward(this, other);
     }
 
     mean(): Tensor {
-        return new MeanOp().forward(this);
+        return new Mean().forward(this);
+    }
+
+    transpose(): Tensor {
+        return new Transpose().forward(this);
+    }
+
+    static transposeRaw(data: Float32Array[]): Float32Array[] {
+        const rows = data.length, cols = data[0].length;
+        const out: Float32Array[] = Array.from({ length: cols }, () => new Float32Array(rows));
+        for (let i = 0; i < rows; i++)
+            for (let j = 0; j < cols; j++)
+                out[j][i] = data[i][j];
+        return out;
     }
 
     backward(grad: Tensor | null = null): void {
         if (!this.requires_grad) return;
-        if (!grad) {
-            if (!this.isScalar()) throw new Error("Must provide grad for non-scalar tensors.");
-            grad = new Tensor(1);
-        }
-        this.grad = this.grad
-            ? new Tensor(addArrays(this.grad.data, grad.data))
-            : new Tensor(deepCopy(grad.data));
-        if (this.operation) this.operation.backward(grad, this);
+        if (!grad) grad = new Tensor(fillLike(this.shape, 1));
+        this.grad ??= new Tensor(fillLike(this.shape, 0));
+        this.grad.data = addRows(this.grad.data, grad.data);
+        this.op?.backward(grad, this);
     }
 }
 
-class AddOp {
-    private forwardKernel = gpu.createKernel(function (a: number[][], b: number[][]) {
+class Add {
+    private kernel = gpu.createKernel(function (a: number[][], b: number[][]) {
         return a[this.thread.y][this.thread.x] + b[this.thread.y][this.thread.x];
-    })
-        .setDynamicOutput(true)
-        .setDynamicArguments(true);
-
-    private backwardKernel = gpu.createKernel(function (grad: number[][]) {
-        return grad[this.thread.y][this.thread.x];
-    })
-        .setDynamicOutput(true)
-        .setDynamicArguments(true);
+    }).setDynamicOutput(true).setDynamicArguments(true);
 
     forward(a: Tensor, b: Tensor | number): Tensor {
-        const bData = typeof b === 'number' ? fillLike(a.data, b) : b.data;
-        const [h, w] = a.shape;
-
-        const result = a.device === 'gpu'
-            ? toNestedArray(this.forwardKernel.setOutput([w, h])(a.data, bData)) as number[][]
-            : addArrays(a.data, bData);
-
-        const out = new Tensor(result, a.requires_grad || (b instanceof Tensor && b.requires_grad), a.device);
-        out.operation = this;
-        out.parents = [a, ...(b instanceof Tensor ? [b] : [])];
+        const shape = a.shape;
+        const bTensor = typeof b === 'number' ? new Tensor(fillLike(shape, b), false, a.device, shape) : b as Tensor;
+        const outData = a.device === 'gpu'
+            ? this.kernel.setOutput([shape[1], shape[0]])(a.data, bTensor.data) as Float32Array[]
+            : addRows(a.data, bTensor.data);
+        const out = new Tensor(outData, a.requires_grad || bTensor.requires_grad, a.device, shape);
+        out.op = this;
+        out.parents = [a, bTensor];
         return out;
     }
 
-    backward(grad: Tensor, out: Tensor): void {
+    backward(grad: Tensor, out: Tensor) {
         const [a, b] = out.parents;
-        const [h, w] = grad.shape;
-
-        const gradData = grad.device === 'gpu'
-            ? this.backwardKernel.setOutput([w, h])(grad.data) as number[][]
-            : grad.data;
-
-        if (a.requires_grad) a.backward(new Tensor(gradData, false, a.device));
-        if (b instanceof Tensor && b.requires_grad) b.backward(new Tensor(gradData, false, b.device));
+        if (a.requires_grad) a.backward(grad);
+        if (b.requires_grad) b.backward(grad);
     }
 }
 
+class Mul {
+    private kernel = gpu.createKernel(function (a: number[][], b: number[][]) {
+        return a[this.thread.y][this.thread.x] * b[this.thread.y][this.thread.x];
+    }).setDynamicOutput(true).setDynamicArguments(true);
 
-class MulOp {
     forward(a: Tensor, b: Tensor | number): Tensor {
-        const bData = typeof b === 'number' ? fillLike(a.data, b) : b.data;
-        const out = new Tensor(mulArrays(a.data, bData), a.requires_grad || (b instanceof Tensor && b.requires_grad), a.device);
-        out.operation = this;
-        out.parents = [a, ...(b instanceof Tensor ? [b] : [])];
+        const shape = a.shape;
+        const bTensor = typeof b === 'number' ? new Tensor(fillLike(shape, b), false, a.device, shape) : b as Tensor;
+        const outData = a.device === 'gpu'
+            ? this.kernel.setOutput([shape[1], shape[0]])(a.data, bTensor.data) as Float32Array[]
+            : mulRows(a.data, bTensor.data);
+        const out = new Tensor(outData, a.requires_grad || bTensor.requires_grad, a.device, shape);
+        out.op = this;
+        out.parents = [a, bTensor];
         return out;
     }
 
-    backward(grad: Tensor, out: Tensor): void {
+    backward(grad: Tensor, out: Tensor) {
         const [a, b] = out.parents;
         if (a.requires_grad) {
-            const bVal = b instanceof Tensor ? b.data : fillLike(a.data, b);
-            a.backward(new Tensor(mulArrays(grad.data, bVal)));
+            const dA = mulRows(grad.data, b.data);
+            a.backward(new Tensor(dA, false, a.device, a.shape));
         }
-        if (b instanceof Tensor && b.requires_grad) {
-            b.backward(new Tensor(mulArrays(grad.data, a.data)));
+        if (b.requires_grad) {
+            const dB = mulRows(grad.data, a.data);
+            b.backward(new Tensor(dB, false, b.device, b.shape));
         }
     }
 }
 
-class MatMulOp {
+class MatMul {
     private forwardKernel = gpu.createKernel(function (a: number[][], b: number[][], k: number) {
         let sum = 0;
         for (let i = 0; i < k; i++) {
@@ -202,7 +158,7 @@ class MatMulOp {
     private backwardAKernel = gpu.createKernel(function (grad: number[][], bT: number[][], n: number) {
         let sum = 0;
         for (let i = 0; i < n; i++) {
-            sum += grad[this.thread.y][i] * bT[this.thread.x][i];
+            sum += grad[this.thread.y][i] * bT[i][this.thread.x];
         }
         return sum;
     }).setDynamicOutput(true).setDynamicArguments(true);
@@ -210,61 +166,80 @@ class MatMulOp {
     private backwardBKernel = gpu.createKernel(function (aT: number[][], grad: number[][], m: number) {
         let sum = 0;
         for (let i = 0; i < m; i++) {
-            sum += aT[this.thread.y][i] * grad[i][this.thread.x];
+            sum += aT[this.thread.x][i] * grad[i][this.thread.y];
         }
         return sum;
     }).setDynamicOutput(true).setDynamicArguments(true);
 
     forward(a: Tensor, b: Tensor): Tensor {
         const [m, k1] = a.shape, [k2, n] = b.shape;
-        if (k1 !== k2) throw new Error("Incompatible shapes for matmul");
+        if (k1 !== k2) throw new Error("Shape mismatch for matmul");
 
         const result = a.device === 'gpu'
-            ? toNestedArray(this.forwardKernel.setOutput([n, m])(a.data, b.data, k1))
-            : matmul(a.data, b.data);
+            ? this.forwardKernel.setOutput([n, m])(a.data, b.data, k1) as Float32Array[]
+            : dot(a.data, b.data);
 
-        const out = new Tensor(result, a.requires_grad || b.requires_grad, a.device);
-        out.operation = this;
+        const out = new Tensor(result, a.requires_grad || b.requires_grad, a.device, [m, n]);
+        out.op = this;
         out.parents = [a, b];
         return out;
     }
 
     backward(grad: Tensor, out: Tensor): void {
         const [a, b] = out.parents;
+        const [m, k] = a.shape, [_, n] = b.shape;
 
         if (a.requires_grad) {
-            const bT = transpose(b.data);
+            const bT = Tensor.transposeRaw(b.data);
             const dA = a.device === 'gpu'
-                ? toNestedArray(this.backwardAKernel.setOutput([a.shape[1], a.shape[0]])(grad.data, bT, b.shape[1]))
-                : matmul(grad.data, bT);
-            a.backward(new Tensor(dA));
+                ? this.backwardAKernel.setOutput([k, m])(grad.data, bT, n) as Float32Array[]
+                : dot(grad.data, bT);
+            a.backward(new Tensor(dA, false, a.device, [m, k]));
         }
 
         if (b.requires_grad) {
-            const aT = transpose(a.data);
+            const aT = Tensor.transposeRaw(a.data);
             const dB = b.device === 'gpu'
-                ? toNestedArray(this.backwardBKernel.setOutput([b.shape[1], b.shape[0]])(aT, grad.data, a.shape[0]))
-                : matmul(aT, grad.data);
-            b.backward(new Tensor(dB));
+                ? this.backwardBKernel.setOutput([n, k])(aT, grad.data, m) as Float32Array[]
+                : dot(aT, grad.data);
+            b.backward(new Tensor(dB, false, b.device, [k, n]));
         }
     }
 }
 
-class MeanOp {
-    private count = 1;
+class Mean {
+    count = 1;
 
-    forward(input: Tensor): Tensor {
-        const flat = flatDeep(input.data);
+    forward(x: Tensor): Tensor {
+        const flat: number[] = [];
+        for (const row of x.data) for (let j = 0; j < row.length; j++) flat.push(row[j]);
         this.count = flat.length;
-        const out = new Tensor(flat.reduce((a, b) => a + b, 0) / this.count, input.requires_grad, input.device);
-        out.operation = this;
-        out.parents = [input];
+        const sum = flat.reduce((acc, v) => acc + v, 0);
+        const out = new Tensor([new Float32Array([sum / this.count])], x.requires_grad, x.device, [1, 1]);
+        out.op = this;
+        out.parents = [x];
+        return out;
+    }
+
+    backward(grad: Tensor, out: Tensor) {
+        const [x] = out.parents;
+        const g = grad.data[0][0] / this.count;
+        x.backward(new Tensor(fillLike(x.shape, g)));
+    }
+}
+
+class Transpose {
+    forward(t: Tensor): Tensor {
+        const transposed = Tensor.transposeRaw(t.data);
+        const out = new Tensor(transposed, t.requires_grad, t.device, [t.shape[1], t.shape[0]]);
+        out.op = this;
+        out.parents = [t];
         return out;
     }
 
     backward(grad: Tensor, out: Tensor): void {
-        const [input] = out.parents;
-        const g = Array.isArray(grad.data) ? flatDeep(grad.data)[0] : grad.data;
-        input.backward(new Tensor(fillLike(input.data, g / this.count)));
+        const [t] = out.parents;
+        const transposedGrad = Tensor.transposeRaw(grad.data);
+        t.backward(new Tensor(transposedGrad, false, t.device, [out.shape[1], out.shape[0]]));
     }
 }
