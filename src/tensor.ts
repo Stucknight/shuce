@@ -7,7 +7,13 @@ function shapeOf(data: Float32Array[] | number[][]): number[] {
 }
 
 function fillLike(shape: number[], value: number): Float32Array[] {
-    return Array.from({ length: shape[0] }, () => new Float32Array(shape[1]).fill(value));
+    const out: Float32Array[] = [];
+    for (let i = 0; i < shape[0]; i++) {
+        const row = new Float32Array(shape[1]);
+        row.fill(value);
+        out.push(row);
+    }
+    return out;
 }
 
 function addRows(a: Float32Array[], b: Float32Array[]): Float32Array[] {
@@ -20,7 +26,10 @@ function mulRows(a: Float32Array[], b: Float32Array[]): Float32Array[] {
 
 function dot(a: Float32Array[], b: Float32Array[]): Float32Array[] {
     const m = a.length, k = a[0].length, n = b[0].length;
-    const out: Float32Array[] = Array.from({ length: m }, () => new Float32Array(n));
+    const out: Float32Array[] = [];
+    for (let i = 0; i < m; i++) {
+        out[i] = new Float32Array(n);
+    }
     for (let i = 0; i < m; i++)
         for (let j = 0; j < n; j++)
             for (let x = 0; x < k; x++)
@@ -42,15 +51,16 @@ export class Tensor {
 
     static randn(shape: number[], requires_grad = false, device: 'cpu' | 'gpu' = 'cpu'): Tensor {
         const [h, w] = shape;
-        const rows = Array.from({ length: h }, () => {
+        const rows: Float32Array[] = [];
+        for (let i = 0; i < h; i++) {
             const row = new Float32Array(w);
             for (let j = 0; j < w; j++) {
                 const u1 = Math.random(), u2 = Math.random();
                 const r = Math.sqrt(-2 * Math.log(u1)), theta = 2 * Math.PI * u2;
                 row[j] = r * Math.cos(theta);
             }
-            return row;
-        });
+            rows.push(row);
+        }
         return new Tensor(rows, requires_grad, device, shape);
     }
 
@@ -76,7 +86,10 @@ export class Tensor {
 
     static transposeRaw(data: Float32Array[]): Float32Array[] {
         const rows = data.length, cols = data[0].length;
-        const out: Float32Array[] = Array.from({ length: cols }, () => new Float32Array(rows));
+        const out: Float32Array[] = [];
+        for (let j = 0; j < cols; j++) {
+            out[j] = new Float32Array(rows);
+        }
         for (let i = 0; i < rows; i++)
             for (let j = 0; j < cols; j++)
                 out[j][i] = data[i][j];

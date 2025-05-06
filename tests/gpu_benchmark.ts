@@ -35,12 +35,6 @@ function benchmark(device: 'cpu' | 'gpu', runs = 1) {
     return { time: avgTime, loss: lastLoss };
 }
 
-// Uncomment to run both
-// const cpuResult = benchmark('cpu');
-// console.log('CPU avg time:', cpuResult.time.toFixed(2), 'ms');
-// console.log('CPU loss:', cpuResult.loss);
-
 const gpuResult = benchmark('gpu');
 console.log('GPU avg time:', gpuResult.time.toFixed(2), 'ms');
 console.log('GPU loss:', gpuResult.loss);
-console.log(process.memoryUsage());
